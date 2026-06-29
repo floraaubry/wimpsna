@@ -33,27 +33,53 @@ namespace WhereIsMyPSNA
 
         private static readonly int[] ScheduleToSheetCol = { 0, 1, 3, 2, 4, 5 };
 
+        private readonly Panel[]          _rowPanels    = new Panel[6];
         private readonly Image[]          _recipeIcons  = new Image[6];
         private readonly Label[]          _recipeLabels = new Label[6];
         private readonly Image[]          _karmaIcons   = new Image[6];
         private readonly Label[]          _karmaLabels  = new Label[6];
         private readonly Label[]          _knownLabels  = new Label[6];
-        private readonly LoadingSpinner[] _spinners     = new LoadingSpinner[6];
+        private readonly StandardButton[] _copyButtons  = new StandardButton[6];
+        private LoadingSpinner            _centerSpinner;
+        private Label                     _statusLabel;
 
         private readonly RecipeTooltip   _tooltip;
         private readonly Gw2ApiManager   _apiManager;
         private readonly int[]           _slotItemIds             = new int[6];
         private readonly Texture2D[]     _slotCraftedIconTextures = new Texture2D[6];
 
-        private Texture2D               _karmaTexture;
         private bool                    _coinTexturesLoaded;
         private int                     _hoveredSlot = -1;
         private CancellationTokenSource _spinnerCts;
         private volatile HashSet<int>   _knownCraftingRecipeIds;
 
+        private float _fadeOpacity;
+        private bool  _fadeActive;
+        private const float FadeDuration = 0.35f;
+
         private const string CoinGoldUrl   = "https://render.guildwars2.com/file/090A980A96D39FD36FBB004903644C6DBEFB1FFB/156904.png";
         private const string CoinSilverUrl = "https://render.guildwars2.com/file/E5A2197D78ECE4AE0349C8B3710D033D22DB0DA6/156907.png";
         private const string CoinCopperUrl = "https://render.guildwars2.com/file/6CF8F96A3299CFC75D5CC90617C3C70331A1EF0E/156902.png";
+
+        private static readonly TimeSpan CacheExpiry = TimeSpan.FromMinutes(5);
+
+        private class SlotData
+        {
+            public bool      IsNotDetermined;
+            public int       ItemId;
+            public string    ItemName;
+            public Texture2D IconTexture;
+            public Texture2D CraftedIconTexture;
+        }
+
+        private class FetchCache
+        {
+            public DateTime   Timestamp;
+            public SlotData[] Slots;
+            public Texture2D  KarmaTexture;
+        }
+
+        private FetchCache _cache;
 
         public PsnaWindow(ContentsManager contentsManager, Gw2ApiManager apiManager)
             : base(
@@ -72,6 +98,28 @@ namespace WhereIsMyPSNA
             _tooltip    = new RecipeTooltip();
 
             BuildRows(PsnaSchedule.GetTodaysLocations());
+
+            const int spinnerSize = 48;
+            int spinnerY = 6 * RowHeight / 2 - spinnerSize / 2;
+            _centerSpinner = new LoadingSpinner
+            {
+                Parent   = this,
+                Size     = new Point(spinnerSize, spinnerSize),
+                Location = new Point(ContentRegion.Width / 2 - spinnerSize / 2, spinnerY),
+                Visible  = false,
+            };
+
+            _statusLabel = new Label
+            {
+                Parent              = this,
+                Text                = "",
+                Location            = new Point(0, spinnerY + spinnerSize + 8),
+                Size                = new Point(ContentRegion.Width, 20),
+                Font                = GameService.Content.DefaultFont14,
+                TextColor           = Color.LightGray,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                Visible             = false,
+            };
         }
 
         private void BuildRows(PsnaSchedule.AgentLocation[] locations)
@@ -83,7 +131,7 @@ namespace WhereIsMyPSNA
             {
                 var loc = locations[i];
 
-                var row = new Panel
+                _rowPanels[i] = new Panel
                 {
                     Parent     = this,
                     Size       = new Point(rowWidth, RowHeight),
@@ -91,6 +139,7 @@ namespace WhereIsMyPSNA
                     ShowBorder = true,
                     Title      = loc.Npc,
                 };
+                var row = _rowPanels[i];
 
                 int leftTextX = IconSize + 18;
                 int rightColW = 200;
@@ -98,15 +147,14 @@ namespace WhereIsMyPSNA
                 int leftTextW = rightColX - leftTextX - 8;
 
                 int capturedY = y;
-                var copyBtn = new StandardButton
+                _copyButtons[i] = new StandardButton
                 {
                     Parent   = this,
                     Text     = "Copy",
                     Size     = new Point(70, TitleOffset),
                     Location = new Point(rowWidth - 70 - 10, capturedY + 5),
+                    Visible  = false,
                 };
-
-                int capturedIdx = i;
 
                 _recipeIcons[i] = new Image
                 {
@@ -114,15 +162,6 @@ namespace WhereIsMyPSNA
                     Size     = new Point(IconSize, IconSize),
                     Location = new Point(8, 10),
                     Visible  = false,
-                };
-
-
-                _spinners[i] = new LoadingSpinner
-                {
-                    Parent   = row,
-                    Size     = new Point(20, 20),
-                    Location = new Point(leftTextX, 10),
-                    Visible  = true,
                 };
 
                 _recipeLabels[i] = new Label
@@ -166,6 +205,17 @@ namespace WhereIsMyPSNA
                     Visible             = false,
                 };
 
+                var capturedLoc = loc;
+                _copyButtons[i].Click += (s, e) =>
+                {
+                    if (string.IsNullOrEmpty(capturedLoc.ChatCode))
+                    {
+                        ScreenNotification.ShowNotification("No chat code for this location yet");
+                        return;
+                    }
+                    TrySetClipboardText(capturedLoc.ChatCode);
+                };
+
                 new Label
                 {
                     Parent              = row,
@@ -188,17 +238,6 @@ namespace WhereIsMyPSNA
                     HorizontalAlignment = HorizontalAlignment.Right,
                 };
 
-                var capturedLoc = loc;
-                copyBtn.Click += (s, e) =>
-                {
-                    if (string.IsNullOrEmpty(capturedLoc.ChatCode))
-                    {
-                        ScreenNotification.ShowNotification("No chat code for this location yet");
-                        return;
-                    }
-                    TrySetClipboardText(capturedLoc.ChatCode);
-                };
-
                 y += RowHeight + RowSpacing;
             }
         }
@@ -209,16 +248,112 @@ namespace WhereIsMyPSNA
 
             if (Visible)
             {
-                _ = FetchAccountRecipesAsync();
-                ResetToLoading();
+                if (_cache != null && (DateTime.UtcNow - _cache.Timestamp) < CacheExpiry)
+                {
+                    ApplyCache(_cache);
+                    _ = RefreshKnownLabelsAsync();
+                    return;
+                }
+
+                ShowLoadingSpinner();
                 _spinnerCts?.Cancel();
                 _spinnerCts = new CancellationTokenSource();
-                Task.Run(() => FetchAllAsync(_spinnerCts.Token));
+                var accountTask = FetchAccountRecipesAsync();
+                Task.Run(() => FetchAllAsync(_spinnerCts.Token, accountTask));
             }
             else
             {
                 _tooltip.Visible = false;
             }
+        }
+
+        private void ShowLoadingSpinner()
+        {
+            GameService.Graphics.QueueMainThreadRender(_ =>
+            {
+                _fadeActive            = false;
+                _centerSpinner.Visible = true;
+                _statusLabel.Visible   = true;
+                for (int i = 0; i < 6; i++)
+                {
+                    _rowPanels[i].Visible    = false;
+                    _recipeIcons[i].Visible  = false;
+                    _recipeLabels[i].Visible = false;
+                    _karmaIcons[i].Visible   = false;
+                    _karmaLabels[i].Visible  = false;
+                    _knownLabels[i].Visible  = false;
+                    _copyButtons[i].Visible  = false;
+                }
+            });
+        }
+
+        private void SetUiOpacity(float opacity)
+        {
+            for (int i = 0; i < 6; i++)
+            {
+                _rowPanels[i].Opacity    = opacity;
+                _recipeIcons[i].Opacity  = opacity;
+                _recipeLabels[i].Opacity = opacity;
+                _karmaIcons[i].Opacity   = opacity;
+                _karmaLabels[i].Opacity  = opacity;
+                _knownLabels[i].Opacity  = opacity;
+                _copyButtons[i].Opacity  = opacity;
+            }
+        }
+
+        private void StartFadeIn()
+        {
+            _fadeOpacity = 0f;
+            _fadeActive  = true;
+            SetUiOpacity(0f);
+        }
+
+        private void SetStatus(string text)
+        {
+            GameService.Graphics.QueueMainThreadRender(_ =>
+            {
+                _statusLabel.Text = text;
+            });
+        }
+
+        private void ApplyCache(FetchCache cache)
+        {
+            GameService.Graphics.QueueMainThreadRender(_ =>
+            {
+                _centerSpinner.Visible = false;
+                _statusLabel.Visible   = false;
+                for (int i = 0; i < 6; i++)
+                {
+                    var slot = cache.Slots[i];
+                    _rowPanels[i].Visible   = true;
+                    _copyButtons[i].Visible = true;
+
+                    if (slot.IsNotDetermined)
+                    {
+                        _recipeLabels[i].Text    = "Not determined yet";
+                        _recipeLabels[i].Visible = true;
+                        _recipeIcons[i].Visible  = false;
+                        _karmaIcons[i].Visible   = false;
+                        _karmaLabels[i].Visible  = false;
+                        _knownLabels[i].Visible  = false;
+                    }
+                    else
+                    {
+                        _slotItemIds[i]             = slot.ItemId;
+                        _slotCraftedIconTextures[i] = slot.CraftedIconTexture;
+
+                        _recipeLabels[i].Text    = slot.ItemName;
+                        _recipeLabels[i].Visible = true;
+                        _recipeIcons[i].Texture  = slot.IconTexture;
+                        _recipeIcons[i].Visible  = slot.IconTexture != null;
+                        _karmaIcons[i].Texture   = cache.KarmaTexture;
+                        _karmaIcons[i].Visible   = cache.KarmaTexture != null;
+                        _karmaLabels[i].Visible  = true;
+                        _knownLabels[i].Visible  = false;
+                    }
+                }
+                StartFadeIn();
+            });
         }
 
         private async Task FetchAccountRecipesAsync()
@@ -232,19 +367,6 @@ namespace WhereIsMyPSNA
             {
                 var recipes = await _apiManager.Gw2ApiClient.V2.Account.Recipes.GetAsync();
                 _knownCraftingRecipeIds = new HashSet<int>(recipes);
-
-                GameService.Graphics.QueueMainThreadRender(_ =>
-                {
-                    for (int i = 0; i < 6; i++)
-                    {
-                        int slotItemId = _slotItemIds[i];
-                        if (slotItemId <= 0 || !RecipeDefs.ByRecipeSheetId.TryGetValue(slotItemId, out var def))
-                            continue;
-                        bool isKnown = def.CraftingRecipeIds != null
-                                       && Array.Exists(def.CraftingRecipeIds, id => _knownCraftingRecipeIds.Contains(id));
-                        _knownLabels[i].Visible = isKnown;
-                    }
-                });
             }
             catch (Exception ex)
             {
@@ -252,25 +374,28 @@ namespace WhereIsMyPSNA
             }
         }
 
-        private void ResetToLoading()
+        private async Task RefreshKnownLabelsAsync()
         {
-            for (int i = 0; i < 6; i++)
+            await FetchAccountRecipesAsync();
+            var known = _knownCraftingRecipeIds;
+            GameService.Graphics.QueueMainThreadRender(_ =>
             {
-                int idx = i;
-                GameService.Graphics.QueueMainThreadRender(_ =>
+                for (int i = 0; i < 6; i++)
                 {
-                    _recipeIcons[idx].Visible    = false;
-                    _recipeLabels[idx].Visible   = false;
-                    _recipeLabels[idx].Text      = "";
-                    _spinners[idx].Visible       = true;
-                    _karmaIcons[idx].Visible     = false;
-                    _karmaLabels[idx].Visible    = false;
-                    _knownLabels[idx].Visible    = false;
-                });
-            }
+                    int itemId = _slotItemIds[i];
+                    if (itemId <= 0 || !RecipeDefs.ByRecipeSheetId.TryGetValue(itemId, out var def))
+                    {
+                        _knownLabels[i].Visible = false;
+                        continue;
+                    }
+                    bool isKnown = known != null && def.CraftingRecipeIds != null
+                                   && Array.Exists(def.CraftingRecipeIds, id => known.Contains(id));
+                    _knownLabels[i].Visible = isKnown;
+                }
+            });
         }
 
-        private async Task FetchAllAsync(CancellationToken ct)
+        private async Task FetchAllAsync(CancellationToken ct, Task accountRecipesTask)
         {
             try
             {
@@ -285,24 +410,14 @@ namespace WhereIsMyPSNA
                         _tooltip.SetCoinTextures(coins[0], coins[1], coins[2]));
                 }
 
+                SetStatus("Fetching schedule...");
                 var karmaTask = FetchKarmaIconAsync();
                 var sheetTask = FetchSheetAsync();
                 await Task.WhenAll(karmaTask, sheetTask);
 
                 if (ct.IsCancellationRequested) return;
 
-                _karmaTexture = karmaTask.Result;
-
-                if (_karmaTexture != null)
-                {
-                    for (int i = 0; i < 6; i++)
-                    {
-                        int idx = i;
-                        GameService.Graphics.QueueMainThreadRender(_ =>
-                            _karmaIcons[idx].Texture = _karmaTexture);
-                    }
-                }
-
+                var karmaTexture          = karmaTask.Result;
                 var (itemIds, todayFlags) = sheetTask.Result;
 
                 var validIds = itemIds
@@ -312,6 +427,7 @@ namespace WhereIsMyPSNA
                     .Distinct()
                     .ToArray();
 
+                SetStatus("Fetching recipe data...");
                 var items = validIds.Length > 0
                     ? await FetchItemsAsync(validIds)
                     : new Dictionary<int, Gw2Item>();
@@ -331,85 +447,129 @@ namespace WhereIsMyPSNA
                     ? await FetchItemsAsync(distinctCraftedIds)
                     : new Dictionary<int, Gw2Item>();
 
+                var slotResults      = new SlotData[6];
+                var iconTasks        = new Task<Texture2D>[6];
+                var craftedIconTasks = new Task<Texture2D>[6];
+
                 for (int i = 0; i < 6; i++)
                 {
-                    if (ct.IsCancellationRequested) return;
+                    int sheetCol   = ScheduleToSheetCol[i];
+                    slotResults[i] = new SlotData();
 
-                    int idx      = i;
-                    int sheetCol = ScheduleToSheetCol[i];
-
-                    if (!todayFlags[sheetCol] || itemIds[sheetCol] <= 0 || !items.TryGetValue(itemIds[sheetCol], out var item))
+                    if (!todayFlags[sheetCol] || itemIds[sheetCol] <= 0
+                        || !items.TryGetValue(itemIds[sheetCol], out var item))
                     {
-                        GameService.Graphics.QueueMainThreadRender(_ =>
-                        {
-                            _spinners[idx].Visible     = false;
-                            _recipeLabels[idx].Text    = "Not determined yet";
-                            _recipeLabels[idx].Visible = true;
-                        });
+                        slotResults[i].IsNotDetermined = true;
+                        iconTasks[i]        = Task.FromResult<Texture2D>(null);
+                        craftedIconTasks[i] = Task.FromResult<Texture2D>(null);
                         continue;
                     }
 
-                    _slotItemIds[idx] = itemIds[sheetCol];
+                    slotResults[i].ItemId   = itemIds[sheetCol];
+                    slotResults[i].ItemName = item.Name;
 
-                    if (craftedIdPerSlot[idx] > 0
-                        && craftedItems.TryGetValue(craftedIdPerSlot[idx], out var craftedItem)
-                        && !string.IsNullOrEmpty(craftedItem.Icon))
+                    iconTasks[i] = string.IsNullOrEmpty(item.Icon)
+                        ? Task.FromResult<Texture2D>(null)
+                        : FetchTextureAsync(item.Icon);
+
+                    craftedIconTasks[i] = craftedIdPerSlot[i] > 0
+                        && craftedItems.TryGetValue(craftedIdPerSlot[i], out var craftedItem)
+                        && !string.IsNullOrEmpty(craftedItem.Icon)
+                            ? FetchTextureAsync(craftedItem.Icon)
+                            : Task.FromResult<Texture2D>(null);
+                }
+
+                SetStatus("Fetching icons...");
+                await Task.WhenAll(iconTasks.Concat(craftedIconTasks).ToArray());
+
+                if (ct.IsCancellationRequested) return;
+
+                for (int i = 0; i < 6; i++)
+                {
+                    if (!slotResults[i].IsNotDetermined)
                     {
-                        var craftedTex = await FetchTextureAsync(craftedItem.Icon);
-                        if (craftedTex != null)
-                            _slotCraftedIconTextures[idx] = craftedTex;
+                        slotResults[i].IconTexture        = iconTasks[i].Result;
+                        slotResults[i].CraftedIconTexture = craftedIconTasks[i].Result;
                     }
+                }
 
-                    Texture2D iconTex = null;
-                    if (!string.IsNullOrEmpty(item.Icon))
-                        iconTex = await FetchTextureAsync(item.Icon);
+                SetStatus("Checking known recipes...");
+                await accountRecipesTask;
 
-                    if (ct.IsCancellationRequested) return;
+                if (ct.IsCancellationRequested) return;
 
-                    var capturedItem = item;
-                    var capturedIcon = iconTex;
+                var known = _knownCraftingRecipeIds;
 
-                    bool isKnown = false;
-                    if (RecipeDefs.ByRecipeSheetId.TryGetValue(itemIds[sheetCol], out var knownDef))
+                if (slotResults.Any(s => !s.IsNotDetermined))
+                {
+                    _cache = new FetchCache
                     {
-                        var known = _knownCraftingRecipeIds;
-                        isKnown = known != null && knownDef.CraftingRecipeIds != null
-                                  && Array.Exists(knownDef.CraftingRecipeIds, id => known.Contains(id));
-                    }
+                        Timestamp    = DateTime.UtcNow,
+                        Slots        = slotResults,
+                        KarmaTexture = karmaTexture,
+                    };
+                }
 
-                    bool capturedKnown = isKnown;
-                    GameService.Graphics.QueueMainThreadRender(_ =>
+                GameService.Graphics.QueueMainThreadRender(_ =>
+                {
+                    _centerSpinner.Visible = false;
+                _statusLabel.Visible   = false;
+
+                    for (int i = 0; i < 6; i++)
                     {
-                        _spinners[idx].Visible = false;
+                        var slot = slotResults[i];
+                        _rowPanels[i].Visible   = true;
+                        _copyButtons[i].Visible = true;
 
-                        _recipeLabels[idx].Text    = capturedItem.Name;
-                        _recipeLabels[idx].Visible = true;
-
-                        if (capturedIcon != null)
+                        if (slot.IsNotDetermined)
                         {
-                            _recipeIcons[idx].Texture = capturedIcon;
-                            _recipeIcons[idx].Visible = true;
+                            _recipeLabels[i].Text    = "Not determined yet";
+                            _recipeLabels[i].Visible = true;
+                            continue;
                         }
 
-                        _karmaLabels[idx].Visible = true;
-                        _karmaIcons[idx].Visible  = _karmaTexture != null;
-                        _knownLabels[idx].Visible = capturedKnown;
-                    });
-                }
+                        _slotItemIds[i]             = slot.ItemId;
+                        _slotCraftedIconTextures[i] = slot.CraftedIconTexture;
+
+                        _recipeLabels[i].Text    = slot.ItemName;
+                        _recipeLabels[i].Visible = true;
+
+                        if (slot.IconTexture != null)
+                        {
+                            _recipeIcons[i].Texture = slot.IconTexture;
+                            _recipeIcons[i].Visible = true;
+                        }
+
+                        _karmaIcons[i].Texture  = karmaTexture;
+                        _karmaLabels[i].Visible = true;
+                        _karmaIcons[i].Visible  = karmaTexture != null;
+
+                        if (RecipeDefs.ByRecipeSheetId.TryGetValue(slot.ItemId, out var knownDef))
+                        {
+                            bool isKnown = known != null && knownDef.CraftingRecipeIds != null
+                                           && Array.Exists(knownDef.CraftingRecipeIds, id => known.Contains(id));
+                            _knownLabels[i].Visible = isKnown;
+                        }
+                    }
+                    StartFadeIn();
+                });
             }
             catch (Exception ex) when (!ct.IsCancellationRequested)
             {
                 Logger.Warn(ex, "Failed to fetch PSNA data.");
-                for (int i = 0; i < 6; i++)
+                GameService.Graphics.QueueMainThreadRender(_ =>
                 {
-                    int idx = i;
-                    GameService.Graphics.QueueMainThreadRender(_ =>
+                    _centerSpinner.Visible = false;
+                _statusLabel.Visible   = false;
+                    for (int i = 0; i < 6; i++)
                     {
-                        _spinners[idx].Visible     = false;
-                        _recipeLabels[idx].Text    = "Fetch failed";
-                        _recipeLabels[idx].Visible = true;
-                    });
-                }
+                        _rowPanels[i].Visible    = true;
+                        _recipeLabels[i].Text    = "Fetch failed";
+                        _recipeLabels[i].Visible = true;
+                        _copyButtons[i].Visible  = true;
+                    }
+                    StartFadeIn();
+                });
             }
         }
 
@@ -496,7 +656,18 @@ namespace WhereIsMyPSNA
 
             if (!Visible) return;
 
-            var mouse = GameService.Input.Mouse.Position;
+            if (_fadeActive)
+            {
+                _fadeOpacity += (float)(gameTime.ElapsedGameTime.TotalSeconds / FadeDuration);
+                if (_fadeOpacity >= 1f)
+                {
+                    _fadeOpacity = 1f;
+                    _fadeActive  = false;
+                }
+                SetUiOpacity(_fadeOpacity);
+            }
+
+            var mouse   = GameService.Input.Mouse.Position;
             int hitSlot = -1;
 
             for (int i = 0; i < 6; i++)
@@ -515,7 +686,7 @@ namespace WhereIsMyPSNA
                 if (hitSlot != _hoveredSlot)
                 {
                     _hoveredSlot = hitSlot;
-                    int itemId = _slotItemIds[hitSlot];
+                    int itemId   = _slotItemIds[hitSlot];
                     if (itemId > 0 && RecipeDefs.ByRecipeSheetId.TryGetValue(itemId, out var def))
                     {
                         _tooltip.SetRecipe(def, _slotCraftedIconTextures[hitSlot]);
@@ -529,7 +700,7 @@ namespace WhereIsMyPSNA
             }
             else
             {
-                _hoveredSlot    = -1;
+                _hoveredSlot     = -1;
                 _tooltip.Visible = false;
             }
         }

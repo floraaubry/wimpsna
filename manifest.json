@@ -3,7 +3,7 @@
   "name": "Where Is My PSNA",
   "namespace": "com.odizinne.whereismypsna",
   "package": "WhereIsMyPSNA.dll",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "url": "https://github.com/floraaubry/wimpsna",
   "contributors": [
     {
