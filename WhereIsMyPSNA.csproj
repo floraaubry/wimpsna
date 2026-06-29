@@ -20,14 +20,15 @@
 
   <Target Name="PackBhm" AfterTargets="Build">
     <ItemGroup>
-      <BhmFiles Include="$(OutputPath)WhereIsMyPSNA.dll" />
-      <BhmFiles Include="$(OutputPath)WhereIsMyPSNA.pdb" />
-      <BhmFiles Include="$(ProjectDir)manifest.json" />
-      <BhmFiles Include="$(ProjectDir)ref\psna.png" />
-      <BhmFiles Include="$(ProjectDir)ref\window_bg.png" />
-      <BhmFiles Include="$(ProjectDir)ref\window_emblem.png" />
+      <BhmCoreFiles Include="$(OutputPath)WhereIsMyPSNA.dll" />
+      <BhmCoreFiles Include="$(OutputPath)WhereIsMyPSNA.pdb" />
+      <BhmCoreFiles Include="$(ProjectDir)manifest.json" />
+      <BhmRefFiles Include="$(ProjectDir)ref\psna.png" />
+      <BhmRefFiles Include="$(ProjectDir)ref\window_bg.png" />
+      <BhmRefFiles Include="$(ProjectDir)ref\window_emblem.png" />
     </ItemGroup>
-    <Copy SourceFiles="@(BhmFiles)" DestinationFolder="$(OutputPath)bhm_staging\" />
+    <Copy SourceFiles="@(BhmCoreFiles)" DestinationFolder="$(OutputPath)bhm_staging\" />
+    <Copy SourceFiles="@(BhmRefFiles)" DestinationFolder="$(OutputPath)bhm_staging\ref\" />
     <ZipDirectory
       SourceDirectory="$(OutputPath)bhm_staging\"
       DestinationFile="$(ProjectDir)WhereIsMyPSNA.bhm"
