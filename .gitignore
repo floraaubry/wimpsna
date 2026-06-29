@@ -1,0 +1,7 @@
+bin/
+obj/
+__pycache__/
+*.pyc
+wiki_cache.json
+recipes.json
+*.bhm
