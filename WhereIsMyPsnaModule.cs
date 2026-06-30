@@ -14,8 +14,9 @@ namespace WhereIsMyPSNA
     {
         private ModuleParameters _moduleParameters;
 
-        private CornerIcon _cornerIcon;
-        private PsnaWindow _psnaWindow;
+        private CornerIcon         _cornerIcon;
+        private PsnaWindow         _psnaWindow;
+        private SettingEntry<bool> _hideKnownNpcs;
 
         [ImportingConstructor]
         public WhereIsMyPsnaModule([Import("ModuleParameters")] ModuleParameters moduleParameters)
@@ -24,7 +25,15 @@ namespace WhereIsMyPSNA
             _moduleParameters = moduleParameters;
         }
 
-        protected override void DefineSettings(SettingCollection settings) { }
+        protected override void DefineSettings(SettingCollection settings)
+        {
+            _hideKnownNpcs = settings.DefineSetting(
+                "HideKnownNpcs",
+                false,
+                () => "Hide NPC if recipe is already known",
+                () => "Hides the panel and copy button for NPCs whose today's recipe you already know."
+            );
+        }
 
         protected override void Initialize() { }
 
@@ -34,7 +43,7 @@ namespace WhereIsMyPSNA
         {
             var icon = _moduleParameters.ContentsManager.GetTexture("psna.png");
 
-            _psnaWindow = new PsnaWindow(_moduleParameters.ContentsManager, _moduleParameters.Gw2ApiManager);
+            _psnaWindow = new PsnaWindow(_moduleParameters.ContentsManager, _moduleParameters.Gw2ApiManager, _hideKnownNpcs);
 
 
             _cornerIcon = new CornerIcon

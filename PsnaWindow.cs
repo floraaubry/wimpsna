@@ -1,6 +1,7 @@
 using Blish_HUD;
 using Blish_HUD.Controls;
 using Blish_HUD.Modules.Managers;
+using Blish_HUD.Settings;
 using TokenPermission = Gw2Sharp.WebApi.V2.Models.TokenPermission;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
@@ -40,11 +41,13 @@ namespace WhereIsMyPSNA
         private readonly Label[]          _karmaLabels  = new Label[6];
         private readonly Label[]          _knownLabels  = new Label[6];
         private readonly StandardButton[] _copyButtons  = new StandardButton[6];
+        private readonly bool[]           _slotIsKnown  = new bool[6];
         private LoadingSpinner            _centerSpinner;
         private Label                     _statusLabel;
 
-        private readonly RecipeTooltip   _tooltip;
-        private readonly Gw2ApiManager   _apiManager;
+        private readonly RecipeTooltip        _tooltip;
+        private readonly Gw2ApiManager        _apiManager;
+        private readonly SettingEntry<bool>   _hideKnownNpcs;
         private readonly int[]           _slotItemIds             = new int[6];
         private readonly Texture2D[]     _slotCraftedIconTextures = new Texture2D[6];
 
@@ -81,7 +84,7 @@ namespace WhereIsMyPSNA
 
         private FetchCache _cache;
 
-        public PsnaWindow(ContentsManager contentsManager, Gw2ApiManager apiManager)
+        public PsnaWindow(ContentsManager contentsManager, Gw2ApiManager apiManager, SettingEntry<bool> hideKnownNpcs)
             : base(
                 contentsManager.GetTexture("window_bg.png"),
                 new Rectangle(40, 26, 913, 691),
@@ -94,8 +97,11 @@ namespace WhereIsMyPSNA
             SavesPosition = true;
             Id            = "PsnaWindow_com.odizinne.whereismypsna_38d37290-b5f9-447d-97ea-45b0b50e5f56";
 
-            _apiManager = apiManager;
-            _tooltip    = new RecipeTooltip();
+            _apiManager    = apiManager;
+            _hideKnownNpcs = hideKnownNpcs;
+            _tooltip       = new RecipeTooltip();
+
+            _hideKnownNpcs.SettingChanged += OnHideKnownNpcSettingChanged;
 
             BuildRows(PsnaSchedule.GetTodaysLocations());
 
@@ -316,6 +322,42 @@ namespace WhereIsMyPSNA
             });
         }
 
+        private void ApplyKnownVisibility(int i, bool isKnown)
+        {
+            bool hide = isKnown && _hideKnownNpcs.Value;
+            _rowPanels[i].Visible   = !hide;
+            _copyButtons[i].Visible = !hide;
+            _knownLabels[i].Visible = isKnown && !hide;
+        }
+
+        private void RelayoutRows()
+        {
+            int y        = 0;
+            int rowWidth = ContentRegion.Width;
+            for (int i = 0; i < 6; i++)
+            {
+                if (!_rowPanels[i].Visible) continue;
+                _rowPanels[i].Location   = new Point(0, y);
+                _copyButtons[i].Location = new Point(rowWidth - 70 - 10, y + 5);
+                _knownLabels[i].Location = new Point(rowWidth - 70 - 10 - 8 - 240, y + 5);
+                y += RowHeight + RowSpacing;
+            }
+        }
+
+        private void OnHideKnownNpcSettingChanged(object sender, ValueChangedEventArgs<bool> e)
+        {
+            if (!Visible || _cache == null) return;
+            GameService.Graphics.QueueMainThreadRender(_ =>
+            {
+                for (int i = 0; i < 6; i++)
+                {
+                    if (_slotItemIds[i] <= 0) continue;
+                    ApplyKnownVisibility(i, _slotIsKnown[i]);
+                }
+                RelayoutRows();
+            });
+        }
+
         private void ApplyCache(FetchCache cache)
         {
             GameService.Graphics.QueueMainThreadRender(_ =>
@@ -352,6 +394,7 @@ namespace WhereIsMyPSNA
                         _knownLabels[i].Visible  = false;
                     }
                 }
+                RelayoutRows();
                 StartFadeIn();
             });
         }
@@ -385,13 +428,16 @@ namespace WhereIsMyPSNA
                     int itemId = _slotItemIds[i];
                     if (itemId <= 0 || !RecipeDefs.ByRecipeSheetId.TryGetValue(itemId, out var def))
                     {
+                        _slotIsKnown[i]         = false;
                         _knownLabels[i].Visible = false;
                         continue;
                     }
                     bool isKnown = known != null && def.CraftingRecipeIds != null
                                    && Array.Exists(def.CraftingRecipeIds, id => known.Contains(id));
-                    _knownLabels[i].Visible = isKnown;
+                    _slotIsKnown[i] = isKnown;
+                    ApplyKnownVisibility(i, isKnown);
                 }
+                RelayoutRows();
             });
         }
 
@@ -548,9 +594,11 @@ namespace WhereIsMyPSNA
                         {
                             bool isKnown = known != null && knownDef.CraftingRecipeIds != null
                                            && Array.Exists(knownDef.CraftingRecipeIds, id => known.Contains(id));
-                            _knownLabels[i].Visible = isKnown;
+                            _slotIsKnown[i] = isKnown;
+                            ApplyKnownVisibility(i, isKnown);
                         }
                     }
+                    RelayoutRows();
                     StartFadeIn();
                 });
             }
@@ -710,6 +758,8 @@ namespace WhereIsMyPSNA
             _spinnerCts?.Cancel();
             _spinnerCts?.Dispose();
             _tooltip?.Dispose();
+            if (_hideKnownNpcs != null)
+                _hideKnownNpcs.SettingChanged -= OnHideKnownNpcSettingChanged;
             base.DisposeControl();
         }
 
